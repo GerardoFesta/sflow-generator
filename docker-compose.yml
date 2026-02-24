@@ -1,0 +1,79 @@
+# ============================================================
+# sFlow Generator Docker Compose
+#
+# Profiles:
+#   default       — generator only (point at external collector)
+#   with-listener — generator + sflowtool listener for local testing
+#
+# ============================================================
+
+networks:
+  sflow-net:
+    driver: bridge
+
+services:
+
+  # ─── sFlow Generator ─────────────────────────────────────────
+  generator:
+    build: .
+    container_name: sflow-generator
+    restart: unless-stopped
+    networks:
+      - sflow-net
+    environment:
+      # Point at the listener service when using with-listener profile,
+      # or override with your real collector host.
+      SFLOW_COLLECTOR_HOST: ${SFLOW_COLLECTOR_HOST:-listener}
+      SFLOW_COLLECTOR_PORT: ${SFLOW_COLLECTOR_PORT:-6343}
+      SFLOW_AGENT_IP: ${SFLOW_AGENT_IP:-192.168.1.1}
+      SFLOW_AGENT_SUB_ID: ${SFLOW_AGENT_SUB_ID:-0}
+      SFLOW_SAMPLING_RATE: ${SFLOW_SAMPLING_RATE:-512}
+      SFLOW_FLOWS_PER_SECOND: ${SFLOW_FLOWS_PER_SECOND:-100}
+      SFLOW_COUNTER_INTERVAL: ${SFLOW_COUNTER_INTERVAL:-30}
+      SFLOW_PATTERN: ${SFLOW_PATTERN:-random}
+      SFLOW_LOG_LEVEL: ${SFLOW_LOG_LEVEL:-INFO}
+    volumes:
+      # Optionally mount a custom config to override defaults
+      - ${SFLOW_CONFIG_PATH:-./config.yaml}:/app/config.yaml:ro
+    depends_on:
+      listener:
+        condition: service_started
+    profiles:
+      - with-listener
+
+  # Same service, no dependency on listener (for external collector use)
+  generator-standalone:
+    build: .
+    container_name: sflow-generator
+    restart: unless-stopped
+    networks:
+      - sflow-net
+    environment:
+      SFLOW_COLLECTOR_HOST: ${SFLOW_COLLECTOR_HOST:-127.0.0.1}
+      SFLOW_COLLECTOR_PORT: ${SFLOW_COLLECTOR_PORT:-6343}
+      SFLOW_AGENT_IP: ${SFLOW_AGENT_IP:-192.168.1.1}
+      SFLOW_AGENT_SUB_ID: ${SFLOW_AGENT_SUB_ID:-0}
+      SFLOW_SAMPLING_RATE: ${SFLOW_SAMPLING_RATE:-512}
+      SFLOW_FLOWS_PER_SECOND: ${SFLOW_FLOWS_PER_SECOND:-100}
+      SFLOW_COUNTER_INTERVAL: ${SFLOW_COUNTER_INTERVAL:-30}
+      SFLOW_PATTERN: ${SFLOW_PATTERN:-random}
+      SFLOW_LOG_LEVEL: ${SFLOW_LOG_LEVEL:-INFO}
+    volumes:
+      - ${SFLOW_CONFIG_PATH:-./config.yaml}:/app/config.yaml:ro
+    profiles:
+      - default
+
+  # ─── sflowtool listener (local testing / verification) ──────
+  # Prints decoded sFlow datagrams to stdout so we can verify
+  # the generator is producing valid packets.
+  listener:
+    image: networkstatic/sflowtool:latest
+    container_name: sflow-listener
+    restart: unless-stopped
+    networks:
+      - sflow-net
+    ports:
+      - "6343:6343/udp"
+    command: ["-p", "6343", "-l"]
+    profiles:
+      - with-listener

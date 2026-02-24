@@ -1,0 +1,147 @@
+# ============================================================
+# sFlow v5 Generator Configuration
+# ============================================================
+# All values here can be overridden with environment variables.
+# See main.py --help for the full list of env var overrides.
+
+# ─── Collector ───────────────────────────────────────────────
+# The host and UDP port of the sFlow collector (e.g. ntopng,
+# sFlow-RT, pmacct, sflowtool, Wireshark, etc.)
+collector:
+  host: "localhost"  # Override with SFLOW_COLLECTOR_HOST
+  port: 6343           # Override with SFLOW_COLLECTOR_PORT
+
+# ─── Agent Identity ──────────────────────────────────────────
+# Simulates the IP address of the switch/router running the agent.
+agent:
+  ip: "192.168.1.1"          # Override with SFLOW_AGENT_IP
+  sub_agent_id: 0             # Override with SFLOW_AGENT_SUB_ID
+
+# ─── Sampling Parameters ─────────────────────────────────────
+sampling:
+  # 1-in-N packet sampling rate. Higher = fewer samples.
+  # A rate of 512 means 1 packet sampled per 512 observed.
+  rate: 1                  # Override with SFLOW_SAMPLING_RATE
+
+  # How many bytes of the sampled packet header to include.
+  # Max is 256 per spec; 128 is common in practice.
+  max_header_size: 128
+
+  # Maximum flow + counter samples to pack per datagram.
+  # Large values may cause UDP fragmentation (MTU ~1500 bytes).
+  samples_per_datagram: 1
+
+# ─── Flow Emission ───────────────────────────────────────────
+flow:
+  # Target number of flow sample records emitted per second.
+  flows_per_second: 10000       # Override with SFLOW_FLOWS_PER_SECOND
+
+  # Which sample types to emit. Options: "flow", "counter"
+  sample_types:
+    - flow
+
+# ─── Counter Polling ─────────────────────────────────────────
+counter_polling:
+  # How often to send interface counter samples (seconds).
+  interval_seconds: 1        # Override with SFLOW_COUNTER_INTERVAL
+
+# ─── Simulated Interfaces ───────────────────────────────────
+# List of interfaces the simulated agent has.
+# ifIndex must be unique. Speed is in bps.
+interfaces:
+  - index: 1
+    type: 6                     # ifType: 6 = ethernetCsmacd
+    speed: 10000000000          # 10 Gbps
+    direction: 1                # 0=unknown, 1=full-duplex, 2=half-duplex
+    admin_status: 1             # 1=up, 2=down, 3=testing
+    oper_status: 1
+    promiscuous_mode: 0
+
+  - index: 2
+    type: 6
+    speed: 10000000000
+    direction: 1
+    admin_status: 1
+    oper_status: 1
+    promiscuous_mode: 0
+
+  - index: 3
+    type: 6
+    speed: 1000000000           # 1 Gbps
+    direction: 1
+    admin_status: 1
+    oper_status: 1
+    promiscuous_mode: 0
+
+  - index: 4
+    type: 6
+    speed: 1000000000
+    direction: 1
+    admin_status: 2             # Down
+    oper_status: 2
+    promiscuous_mode: 0
+
+# ─── Link Utilization Simulation ────────────────────────────
+# Fraction of link capacity used when computing counter increments.
+# 0.1 = 10% utilization across all interfaces.
+link_utilization: 0.9
+
+# ─── Traffic Pattern ─────────────────────────────────────────
+# Controls what kind of sampled packet headers are generated.
+#
+# type options:
+#   random  - Completely random src/dst IPs, ports, protocols
+#   web     - Simulated HTTP/HTTPS traffic (clients ↔ servers)
+#   dns     - Simulated DNS query/response traffic
+#   custom  - Replay a fixed list of flows from this config
+#
+pattern:
+  type: custom                  # Override with SFLOW_PATTERN
+
+  # ── random pattern options ──────────────────────────────────
+  src_subnet: "10.0.0.0/8"
+  dst_subnet: "172.16.0.0/12"
+  protocols:
+    - 6    # TCP
+    - 17   # UDP
+    - 1    # ICMP
+  frame_size_min: 64
+  frame_size_max: 1518
+  vlan_id: null                 # Set to a number (1-4094) to add 802.1Q tag
+
+  # ── web pattern options ─────────────────────────────────────
+  # (used when type: web)
+  # client_subnet: "192.168.0.0/16"
+  # server_ips:
+  #   - "10.0.1.10"
+  #   - "10.0.1.11"
+  # frame_size_min: 64
+  # frame_size_max: 1518
+  # vlan_id: null
+
+  # ── dns pattern options ─────────────────────────────────────
+  # (used when type: dns)
+  # client_subnet: "10.0.0.0/8"
+  # dns_servers:
+  #   - "8.8.8.8"
+  #   - "1.1.1.1"
+
+  # ── custom pattern: fixed flows for deterministic testing ───
+  #(used when type: custom)
+  flows:
+    #- src_ip: "10.0.0.1"
+    #  dst_ip: "1.2.3.4"
+    #  src_port: 54321
+    #  dst_port: 443
+    #  protocol: 6       # TCP
+    #  frame_length: 1200
+    #  vlan_id: 100
+    #  tos: 0
+    #  ttl: 64
+    - src_ip: "123.123.123.3"
+      dst_ip: "1.2.3.4"
+      src_port: 55000
+      dst_port: 53
+      protocol: 17      # UDP
+      frame_length: 100
+      vlan_id: null
