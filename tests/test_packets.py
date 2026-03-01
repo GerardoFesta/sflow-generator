@@ -13,6 +13,7 @@ from sflow.packet import (
     build_raw_packet_header_record,
     build_generic_if_counter_record,
     build_ethernet_ipv4_header,
+    build_ethernet_ipv6_header,
     _pad4,
 )
 
@@ -245,6 +246,123 @@ class TestSFlowDatagram:
         dg = self._make_datagram()
         # Must be at least the header: 28 bytes
         assert len(dg) > 28
+
+
+# ─── IPv6 Ethernet header tests ──────────────────────────────────────────────
+
+class TestEthernetIPv6Header:
+    def _make_header(self, **kwargs):
+        defaults = dict(
+            src_mac="AA:BB:CC:DD:EE:FF",
+            dst_mac="11:22:33:44:55:66",
+            src_ip="2001:db8::1",
+            dst_ip="2001:db8::2",
+            src_port=1234,
+            dst_port=80,
+            protocol=6,
+        )
+        defaults.update(kwargs)
+        return build_ethernet_ipv6_header(**defaults)
+
+    def test_basic_structure(self):
+        hdr = self._make_header()
+        # Ethernet: 14 bytes, IPv6: 40 bytes, L4 stub: 8 bytes = 62
+        assert len(hdr) == 62
+
+    def test_ethertype_ipv6(self):
+        hdr = self._make_header()
+        ethertype = struct.unpack_from("!H", hdr, 12)[0]
+        assert ethertype == 0x86DD
+
+    def test_vlan_variant(self):
+        hdr = self._make_header(vlan_id=100)
+        # 14 + 4 (802.1Q) + 40 + 8 = 66
+        assert len(hdr) == 66
+        vlan_tpid = struct.unpack_from("!H", hdr, 12)[0]
+        assert vlan_tpid == 0x8100
+        # EtherType for IPv6 follows VLAN tag at offset 16
+        ethertype = struct.unpack_from("!H", hdr, 16)[0]
+        assert ethertype == 0x86DD
+
+    def test_ip_addresses_correct(self):
+        src = "2001:db8::1"
+        dst = "2001:db8::2"
+        hdr = self._make_header(src_ip=src, dst_ip=dst)
+        # IPv6 header starts at offset 14; src addr at 14+8=22, dst at 14+8+16=38
+        src_bytes = hdr[22:38]
+        dst_bytes = hdr[38:54]
+        assert socket.inet_ntop(socket.AF_INET6, src_bytes) == src
+        assert socket.inet_ntop(socket.AF_INET6, dst_bytes) == dst
+
+    def test_version_field(self):
+        hdr = self._make_header()
+        # First 4 bytes of IPv6 header at offset 14: top 4 bits = version = 6
+        ver_tc_fl = struct.unpack_from("!I", hdr, 14)[0]
+        version = ver_tc_fl >> 28
+        assert version == 6
+
+    def test_l4_ports_correct(self):
+        hdr = self._make_header(src_port=5555, dst_port=443, protocol=6)
+        # L4 stub at offset 14+40=54
+        src_port = struct.unpack_from("!H", hdr, 54)[0]
+        dst_port = struct.unpack_from("!H", hdr, 56)[0]
+        assert src_port == 5555
+        assert dst_port == 443
+
+    def test_non_tcp_udp_l4_is_zeros(self):
+        hdr = self._make_header(protocol=58)  # ICMPv6
+        l4 = hdr[54:62]
+        assert l4 == b"\x00" * 8
+
+
+# ─── IPv6 agent datagram tests ────────────────────────────────────────────────
+
+class TestSFlowDatagramIPv6Agent:
+    def _make_datagram_ipv6(self, agent_ip="2001:db8::1"):
+        rec = build_raw_packet_header_record(b"A" * 40, 1000)
+        samples = [build_flow_sample(1, 0, 1, 512, 512000, 0, 1, 2, [rec])]
+        return build_sflow_datagram(
+            agent_ip=agent_ip,
+            sub_agent_id=0,
+            sequence_number=1,
+            uptime_ms=12345,
+            samples=samples,
+            agent_ip_version=2,
+        )
+
+    def test_ip_type_is_2(self):
+        dg = self._make_datagram_ipv6()
+        ip_type = struct.unpack_from("!I", dg, 4)[0]
+        assert ip_type == 2
+
+    def test_agent_ip_correct(self):
+        agent_ip = "2001:db8::1"
+        dg = self._make_datagram_ipv6(agent_ip=agent_ip)
+        # IPv6 agent IP: 16 bytes at offset 8
+        agent_bytes = dg[8:24]
+        assert socket.inet_ntop(socket.AF_INET6, agent_bytes) == agent_ip
+
+    def test_version_still_5(self):
+        dg = self._make_datagram_ipv6()
+        version = struct.unpack_from("!I", dg, 0)[0]
+        assert version == 5
+
+    def test_num_samples_field_ipv6(self):
+        rec = build_raw_packet_header_record(b"A" * 40, 1000)
+        s1 = build_flow_sample(1, 0, 1, 512, 0, 0, 1, 2, [rec])
+        s2 = build_flow_sample(2, 0, 1, 512, 0, 0, 1, 2, [rec])
+        dg = build_sflow_datagram(
+            agent_ip="2001:db8::1",
+            sub_agent_id=0,
+            sequence_number=1,
+            uptime_ms=0,
+            samples=[s1, s2],
+            agent_ip_version=2,
+        )
+        # IPv6 datagram header: version(4) ip_type(4) agent_ip(16)
+        #   sub_agent_id(4) seq(4) uptime(4) num_samples(4) = 40 bytes
+        num_samples = struct.unpack_from("!I", dg, 36)[0]
+        assert num_samples == 2
 
 
 # ─── Padding helper ──────────────────────────────────────────────────────────

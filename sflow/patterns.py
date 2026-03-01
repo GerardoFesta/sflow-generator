@@ -17,13 +17,14 @@ class FlowSpec:
     dst_ip: str
     src_port: int
     dst_port: int
-    protocol: int         # 1=ICMP, 6=TCP, 17=UDP
+    protocol: int         # 1=ICMP, 6=TCP, 17=UDP, 58=ICMPv6
     frame_length: int
     vlan_id: int | None
     tos: int
     ttl: int
     input_if: int
     output_if: int
+    ip_version: int = 4   # 4 or 6
 
 
 def _rand_mac() -> str:
@@ -34,6 +35,12 @@ def _rand_ip(subnet: str) -> str:
     net = ipaddress.IPv4Network(subnet, strict=False)
     hosts = list(net.hosts())
     return str(random.choice(hosts))
+
+
+def _rand_ipv6(subnet: str) -> str:
+    net = ipaddress.IPv6Network(subnet, strict=False)
+    offset = random.randint(0, min(2**32 - 1, net.num_addresses - 1))
+    return str(ipaddress.IPv6Address(int(net.network_address) + offset))
 
 
 def _rand_port(well_known: bool = False) -> int:
@@ -70,6 +77,8 @@ class RandomPattern(TrafficPattern):
         frame_min = self.cfg.get("frame_size_min", 64)
         frame_max = self.cfg.get("frame_size_max", 1518)
         vlan_id = self.cfg.get("vlan_id", None)
+        ip_version = self.cfg.get("ip_version", 4)
+        _ip_fn = _rand_ipv6 if ip_version == 6 else _rand_ip
 
         while True:
             inp, out = self._random_if_pair()
@@ -77,8 +86,8 @@ class RandomPattern(TrafficPattern):
             yield FlowSpec(
                 src_mac=_rand_mac(),
                 dst_mac=_rand_mac(),
-                src_ip=_rand_ip(src_subnet),
-                dst_ip=_rand_ip(dst_subnet),
+                src_ip=_ip_fn(src_subnet),
+                dst_ip=_ip_fn(dst_subnet),
                 src_port=_rand_port(),
                 dst_port=_rand_port(well_known=True),
                 protocol=proto,
@@ -88,6 +97,7 @@ class RandomPattern(TrafficPattern):
                 ttl=random.randint(32, 128),
                 input_if=inp,
                 output_if=out,
+                ip_version=ip_version,
             )
 
 
@@ -101,20 +111,22 @@ class WebTrafficPattern(TrafficPattern):
         frame_min = self.cfg.get("frame_size_min", 64)
         frame_max = self.cfg.get("frame_size_max", 1518)
         vlan_id = self.cfg.get("vlan_id", None)
+        ip_version = self.cfg.get("ip_version", 4)
+        _ip_fn = _rand_ipv6 if ip_version == 6 else _rand_ip
 
         while True:
             inp, out = self._random_if_pair()
             server_ip = random.choice(server_ips)
             # Alternate request / response direction
             if random.random() < 0.5:
-                src_ip = _rand_ip(client_subnet)
+                src_ip = _ip_fn(client_subnet)
                 dst_ip = server_ip
                 dst_port = random.choice([80, 443, 8080, 8443])
                 src_port = _rand_port()
                 frame_len = random.randint(frame_min, 200)  # small request
             else:
                 src_ip = server_ip
-                dst_ip = _rand_ip(client_subnet)
+                dst_ip = _ip_fn(client_subnet)
                 src_port = random.choice([80, 443, 8080, 8443])
                 dst_port = _rand_port()
                 frame_len = random.randint(400, frame_max)  # larger response
@@ -133,6 +145,7 @@ class WebTrafficPattern(TrafficPattern):
                 ttl=64,
                 input_if=inp,
                 output_if=out,
+                ip_version=ip_version,
             )
 
 
@@ -143,19 +156,21 @@ class DnsTrafficPattern(TrafficPattern):
         client_subnet = self.cfg.get("client_subnet", "10.0.0.0/8")
         dns_servers = self.cfg.get("dns_servers", ["8.8.8.8", "1.1.1.1"])
         vlan_id = self.cfg.get("vlan_id", None)
+        ip_version = self.cfg.get("ip_version", 4)
+        _ip_fn = _rand_ipv6 if ip_version == 6 else _rand_ip
 
         while True:
             inp, out = self._random_if_pair()
             dns = random.choice(dns_servers)
             if random.random() < 0.5:
-                src_ip = _rand_ip(client_subnet)
+                src_ip = _ip_fn(client_subnet)
                 dst_ip = dns
                 src_port = _rand_port()
                 dst_port = 53
                 frame_len = random.randint(64, 128)
             else:
                 src_ip = dns
-                dst_ip = _rand_ip(client_subnet)
+                dst_ip = _ip_fn(client_subnet)
                 src_port = 53
                 dst_port = _rand_port()
                 frame_len = random.randint(64, 512)
@@ -174,6 +189,7 @@ class DnsTrafficPattern(TrafficPattern):
                 ttl=64,
                 input_if=inp,
                 output_if=out,
+                ip_version=ip_version,
             )
 
 
@@ -187,6 +203,7 @@ class CustomFlowPattern(TrafficPattern):
         entries = self.cfg.get("flows", [])
         if not entries:
             raise ValueError("custom pattern requires 'flows' list in pattern config")
+        global_ip_version = self.cfg.get("ip_version", 4)
         idx = 0
         while True:
             e = entries[idx % len(entries)]
@@ -205,6 +222,7 @@ class CustomFlowPattern(TrafficPattern):
                 ttl=e.get("ttl", 64),
                 input_if=e.get("input_if", inp),
                 output_if=e.get("output_if", out),
+                ip_version=e.get("ip_version", global_ip_version),
             )
             idx += 1
 
