@@ -126,6 +126,54 @@ def build_ethernet_ipv4_header(
     return eth + ip_hdr + l4
 
 
+def build_ethernet_ipv6_header(
+    src_mac: str,
+    dst_mac: str,
+    src_ip: str,
+    dst_ip: str,
+    src_port: int,
+    dst_port: int,
+    protocol: int,        # 6=TCP, 17=UDP, 58=ICMPv6
+    vlan_id: Optional[int] = None,
+    traffic_class: int = 0,
+    flow_label: int = 0,
+    hop_limit: int = 64,
+) -> bytes:
+    """
+    Build a raw Ethernet (+ optional 802.1Q) + IPv6 + L4 header bytes.
+    This is the sampled packet header content that goes into the flow record.
+    """
+    eth_type_ipv6 = 0x86DD
+    eth_type_vlan = 0x8100
+
+    # Ethernet header
+    eth = _mac_to_bytes(dst_mac) + _mac_to_bytes(src_mac)
+    if vlan_id is not None:
+        eth += struct.pack("!HH", eth_type_vlan, (vlan_id & 0x0FFF))
+    eth += struct.pack("!H", eth_type_ipv6)
+
+    # IPv6 header (40 bytes fixed): version(4)|traffic_class(8)|flow_label(20), ...
+    payload_len = 8  # L4 stub only
+    ver_tc_fl = (6 << 28) | ((traffic_class & 0xFF) << 20) | (flow_label & 0xFFFFF)
+    ip6_hdr = struct.pack(
+        "!IHBB16s16s",
+        ver_tc_fl,
+        payload_len,
+        protocol,
+        hop_limit,
+        socket.inet_pton(socket.AF_INET6, src_ip),
+        socket.inet_pton(socket.AF_INET6, dst_ip),
+    )
+
+    # L4 stub (8 bytes, enough for source/dest ports)
+    if protocol in (6, 17):  # TCP or UDP
+        l4 = struct.pack("!HH", src_port, dst_port) + b"\x00" * 4
+    else:
+        l4 = b"\x00" * 8  # ICMPv6 or others
+
+    return eth + ip6_hdr + l4
+
+
 def _ip_checksum(header: bytes) -> int:
     if len(header) % 2:
         header += b"\x00"

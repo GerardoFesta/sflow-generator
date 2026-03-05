@@ -7,6 +7,7 @@ import socket
 import time
 import logging
 import threading
+import ipaddress
 from typing import Any
 
 from .packet import (
@@ -16,6 +17,7 @@ from .packet import (
     build_raw_packet_header_record,
     build_generic_if_counter_record,
     build_ethernet_ipv4_header,
+    build_ethernet_ipv6_header,
 )
 from .patterns import get_pattern, FlowSpec
 from .interfaces import InterfaceRegistry
@@ -41,6 +43,11 @@ class SFlowGenerator:
         agent = config["agent"]
         self.agent_ip = agent["ip"]
         self.sub_agent_id = agent.get("sub_agent_id", 0)
+        try:
+            ipaddress.IPv6Address(self.agent_ip)
+            self._agent_ip_version = 2
+        except ValueError:
+            self._agent_ip_version = 1
 
         # Sampling parameters
         sampling = config.get("sampling", {})
@@ -159,19 +166,32 @@ class SFlowGenerator:
             self._flow_seq += 1
 
             # Build sampled packet header
-            raw_header = build_ethernet_ipv4_header(
-                src_mac=flow.src_mac,
-                dst_mac=flow.dst_mac,
-                src_ip=flow.src_ip,
-                dst_ip=flow.dst_ip,
-                src_port=flow.src_port,
-                dst_port=flow.dst_port,
-                protocol=flow.protocol,
-                vlan_id=flow.vlan_id,
-                tos=flow.tos,
-                ttl=flow.ttl,
-                pkt_id=self._flow_seq,
-            )
+            if flow.ip_version == 6:
+                raw_header = build_ethernet_ipv6_header(
+                    src_mac=flow.src_mac,
+                    dst_mac=flow.dst_mac,
+                    src_ip=flow.src_ip,
+                    dst_ip=flow.dst_ip,
+                    src_port=flow.src_port,
+                    dst_port=flow.dst_port,
+                    protocol=flow.protocol,
+                    vlan_id=flow.vlan_id,
+                    hop_limit=flow.ttl,
+                )
+            else:
+                raw_header = build_ethernet_ipv4_header(
+                    src_mac=flow.src_mac,
+                    dst_mac=flow.dst_mac,
+                    src_ip=flow.src_ip,
+                    dst_ip=flow.dst_ip,
+                    src_port=flow.src_port,
+                    dst_port=flow.dst_port,
+                    protocol=flow.protocol,
+                    vlan_id=flow.vlan_id,
+                    tos=flow.tos,
+                    ttl=flow.ttl,
+                    pkt_id=self._flow_seq,
+                )
             # Truncate header to max_header_size
             truncated = raw_header[: self.max_header_size]
 
@@ -248,6 +268,7 @@ class SFlowGenerator:
             sequence_number=self._datagram_seq,
             uptime_ms=uptime_ms,
             samples=samples,
+            agent_ip_version=self._agent_ip_version,
         )
 
     def _send(self, datagram: bytes):

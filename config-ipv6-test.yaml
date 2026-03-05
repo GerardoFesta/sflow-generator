@@ -1,0 +1,44 @@
+# ============================================================
+# IPv6 test configuration for container-based testing.
+# Used by docker-compose profile "ipv6-test" and tests/test_container.py.
+# The collector host is "host.docker.internal" so containers can reach
+# a UDP listener running on the host machine at port 19876.
+# ============================================================
+
+collector:
+  host: "host.docker.internal"
+  port: 19876
+
+agent:
+  ip: "2001:db8::1"
+  sub_agent_id: 0
+
+sampling:
+  rate: 512
+  max_header_size: 128
+  samples_per_datagram: 1
+
+flow:
+  flows_per_second: 50
+  sample_types:
+    - flow
+    - counter
+
+counter_polling:
+  interval_seconds: 2
+
+interfaces:
+  - index: 1
+  - index: 2
+
+link_utilization: 0.1
+
+pattern:
+  type: random
+  ip_version: 6
+  src_subnet: "2001:db8::/48"
+  dst_subnet: "2001:db8:1::/48"
+  protocols:
+    - 6    # TCP
+    - 17   # UDP
+    - 58   # ICMPv6
