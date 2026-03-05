@@ -10,6 +10,7 @@ Two suites:
                              (transport stays IPv4 UDP to 127.0.0.1)
 """
 
+import ipaddress
 import socket
 import struct
 import threading
@@ -122,6 +123,36 @@ def _ethertype_from_datagram(dg: bytes) -> int:
     return struct.unpack_from("!H", dg, eth_start + 12)[0]
 
 
+def _ipv6_header_from_datagram(dg: bytes) -> dict:
+    """
+    Parse the IPv6 header fields from inside the first flow record of an
+    IPv6-agent sFlow datagram.
+
+    Byte layout for an IPv6-agent datagram with one flow sample:
+      sFlow header : 40 B  (version+ip_type+agent_ip16+sub_id+seq+uptime+nsamples)
+      Flow sample  : 40 B  (type+len + 8 fixed uint32s)
+      Raw record   : 24 B  (type+len + 4 fixed uint32s)
+      Ethernet     : 14 B  (dst_mac+src_mac+ethertype)
+      IPv6 header  : 40 B
+    Total to start of IPv6 header: 40+40+24+14 = 118
+    """
+    ipv6_start = 40 + 40 + 24 + 14   # = 118
+    ver_tc_fl   = struct.unpack_from("!I", dg, ipv6_start)[0]
+    payload_len = struct.unpack_from("!H", dg, ipv6_start + 4)[0]
+    next_header = struct.unpack_from("!B", dg, ipv6_start + 6)[0]
+    hop_limit   = struct.unpack_from("!B", dg, ipv6_start + 7)[0]
+    src_ip = socket.inet_ntop(socket.AF_INET6, dg[ipv6_start + 8  : ipv6_start + 24])
+    dst_ip = socket.inet_ntop(socket.AF_INET6, dg[ipv6_start + 24 : ipv6_start + 40])
+    return {
+        "version":     ver_tc_fl >> 28,
+        "payload_len": payload_len,
+        "next_header": next_header,
+        "hop_limit":   hop_limit,
+        "src_ip":      src_ip,
+        "dst_ip":      dst_ip,
+    }
+
+
 # ─── IPv4 system tests ────────────────────────────────────────────────────────
 
 class TestGeneratorIPv4System:
@@ -202,3 +233,103 @@ class TestGeneratorIPv6System:
         assert _ethertype_from_datagram(datagrams[0]) == 0x86DD, (
             "Expected EtherType 0x86DD (IPv6) in flow record"
         )
+
+    def test_ipv6_version_field_in_flow_record(self):
+        """The IPv6 header inside the flow record has IP version == 6."""
+        datagrams = _run_and_collect(
+            agent_ip="2001:db8::1", ip_version=6, target_count=1, timeout=5.0
+        )
+        assert datagrams, "No datagram received"
+        ipv6 = _ipv6_header_from_datagram(datagrams[0])
+        assert ipv6["version"] == 6, (
+            f"Expected version=6 in sampled IPv6 header, got {ipv6['version']}"
+        )
+
+    def test_ipv6_addresses_in_configured_subnets(self):
+        """src/dst IPs in the flow record fall within the configured subnets."""
+        datagrams = _run_and_collect(
+            agent_ip="2001:db8::1", ip_version=6, target_count=1, timeout=5.0
+        )
+        assert datagrams, "No datagram received"
+        ipv6 = _ipv6_header_from_datagram(datagrams[0])
+        src_net = ipaddress.IPv6Network("2001:db8::/48")
+        dst_net = ipaddress.IPv6Network("2001:db8:1::/48")
+        assert ipaddress.IPv6Address(ipv6["src_ip"]) in src_net, (
+            f"src_ip {ipv6['src_ip']} not in 2001:db8::/48"
+        )
+        assert ipaddress.IPv6Address(ipv6["dst_ip"]) in dst_net, (
+            f"dst_ip {ipv6['dst_ip']} not in 2001:db8:1::/48"
+        )
+
+    def test_datagram_sequence_numbers_are_monotonic(self):
+        """sFlow datagram sequence numbers must strictly increase."""
+        datagrams = _run_and_collect(
+            agent_ip="2001:db8::1", ip_version=6, target_count=5, timeout=5.0
+        )
+        assert len(datagrams) >= 5, (
+            f"Expected >= 5 datagrams but received {len(datagrams)}"
+        )
+        # For IPv6 agent: version(4)+ip_type(4)+agent_ip(16)+sub_agent_id(4) = 28 bytes
+        # then sequence_number at offset 28
+        seqs = [struct.unpack_from("!I", dg, 28)[0] for dg in datagrams]
+        for i in range(1, len(seqs)):
+            assert seqs[i] > seqs[i - 1], (
+                f"Sequence numbers not monotonic: {seqs}"
+            )
+
+    def test_counter_samples_produced_with_ipv6_agent(self):
+        """Counter samples (type=2) are emitted alongside flow samples with IPv6 agent."""
+        received: list[bytes] = []
+        done = threading.Event()
+
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+        sock.settimeout(0.2)
+
+        cfg = _make_config(port, agent_ip="2001:db8::1", ip_version=6)
+        cfg["flow"]["sample_types"] = ["flow", "counter"]
+        cfg["counter_polling"]["interval_seconds"] = 1   # fire quickly
+
+        gen = SFlowGenerator(cfg)
+
+        def _listen():
+            while not done.is_set():
+                try:
+                    data, _ = sock.recvfrom(65535)
+                    received.append(data)
+                except socket.timeout:
+                    pass
+
+        listener_thread = threading.Thread(target=_listen, daemon=True)
+        gen_thread = threading.Thread(target=gen.start, daemon=True)
+        listener_thread.start()
+        gen_thread.start()
+
+        time.sleep(3.0)   # long enough for counter interval to fire at least once
+        gen.stop()
+        done.set()
+        listener_thread.join(timeout=2.0)
+        gen_thread.join(timeout=2.0)
+        sock.close()
+
+        assert received, "No datagrams received at all"
+
+        # Walk every sample in every IPv6-agent datagram and collect sample types.
+        sample_types: set[int] = set()
+        for dg in received:
+            ip_type = struct.unpack_from("!I", dg, 4)[0]
+            if ip_type != 2:
+                continue
+            num_samples = struct.unpack_from("!I", dg, 36)[0]
+            offset = 40   # samples start after the 40-byte IPv6 sFlow header
+            for _ in range(num_samples):
+                if offset + 8 > len(dg):
+                    break
+                stype = struct.unpack_from("!I", dg, offset)[0]
+                slen  = struct.unpack_from("!I", dg, offset + 4)[0]
+                sample_types.add(stype)
+                offset += 8 + slen
+
+        assert 1 in sample_types, "No flow samples (type=1) found in IPv6-agent datagrams"
+        assert 2 in sample_types, "No counter samples (type=2) found in IPv6-agent datagrams"

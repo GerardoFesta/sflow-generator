@@ -314,6 +314,57 @@ class TestEthernetIPv6Header:
         l4 = hdr[54:62]
         assert l4 == b"\x00" * 8
 
+    def test_next_header_field(self):
+        """protocol byte is encoded as IPv6 Next Header at the correct offset."""
+        for proto in (6, 17, 58):
+            hdr = self._make_header(protocol=proto)
+            # IPv6 header at offset 14: ver_tc_fl(4) + payload_len(2) + next_header(1)
+            next_header = struct.unpack_from("!B", hdr, 14 + 4 + 2)[0]
+            assert next_header == proto, f"next_header mismatch for protocol {proto}"
+
+    def test_payload_length_field(self):
+        """payload_len in the IPv6 header equals 8 (the L4 stub size)."""
+        hdr = self._make_header()
+        payload_len = struct.unpack_from("!H", hdr, 14 + 4)[0]
+        assert payload_len == 8
+
+    def test_hop_limit_default(self):
+        """hop_limit defaults to 64."""
+        hdr = self._make_header()
+        hop_limit = struct.unpack_from("!B", hdr, 14 + 4 + 2 + 1)[0]
+        assert hop_limit == 64
+
+    def test_hop_limit_custom(self):
+        """hop_limit value is encoded at the correct position."""
+        hdr = self._make_header(hop_limit=128)
+        hop_limit = struct.unpack_from("!B", hdr, 14 + 4 + 2 + 1)[0]
+        assert hop_limit == 128
+
+    def test_traffic_class_encoded(self):
+        """traffic_class bits land in the correct position of the first 4-byte word."""
+        hdr = self._make_header(traffic_class=0xAB)
+        ver_tc_fl = struct.unpack_from("!I", hdr, 14)[0]
+        tc = (ver_tc_fl >> 20) & 0xFF
+        assert tc == 0xAB
+
+    def test_flow_label_encoded(self):
+        """flow_label occupies the low 20 bits of the first 4-byte word."""
+        hdr = self._make_header(flow_label=0x12345)
+        ver_tc_fl = struct.unpack_from("!I", hdr, 14)[0]
+        fl = ver_tc_fl & 0xFFFFF
+        assert fl == 0x12345
+
+    def test_traffic_class_and_flow_label_independent(self):
+        """traffic_class and flow_label do not bleed into each other."""
+        hdr = self._make_header(traffic_class=0xFF, flow_label=0xFFFFF)
+        ver_tc_fl = struct.unpack_from("!I", hdr, 14)[0]
+        version = ver_tc_fl >> 28
+        tc = (ver_tc_fl >> 20) & 0xFF
+        fl = ver_tc_fl & 0xFFFFF
+        assert version == 6
+        assert tc == 0xFF
+        assert fl == 0xFFFFF
+
 
 # ─── IPv6 agent datagram tests ────────────────────────────────────────────────
 
